@@ -64,7 +64,7 @@ object DataStore {
 class MainActivity : AppCompatActivity() {
 
     private lateinit var etPassword: EditText
-    private lateinit var etNumbers: EditText
+    private lateinit var etStartIndex: EditText
     private lateinit var tvFileStatus: TextView
     private lateinit var tvSpeedLabel: TextView
     private lateinit var sbSpeed: SeekBar
@@ -75,7 +75,6 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("autobot_prefs", Context.MODE_PRIVATE)
 
-        // Load existing saved numbers from file if any
         val savedList = DataStore.loadNumbersFromFile(this)
         if (savedList.isNotEmpty()) {
             DataStore.numbers.clear()
@@ -143,7 +142,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        // Single password
+        // Single Password Field
         val tvPassLabel = TextView(this).apply {
             text = "Single Password (for all numbers):"
             setTextColor(Color.LTGRAY)
@@ -152,6 +151,21 @@ class MainActivity : AppCompatActivity() {
         etPassword = EditText(this).apply {
             hint = "Enter password"
             setText(prefs.getString("saved_pass", ""))
+            setPadding(20, 20, 20, 20)
+            setBackgroundColor(Color.parseColor("#222222"))
+            setTextColor(Color.WHITE)
+        }
+
+        // Jump to particular number
+        val tvJumpLabel = TextView(this).apply {
+            text = "Start from number # (Skip already done):"
+            setTextColor(Color.parseColor("#FFCC00"))
+            setPadding(0, 20, 0, 5)
+        }
+        etStartIndex = EditText(this).apply {
+            hint = "e.g., 1 (or 51 to start from 51st)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getInt("saved_start_index", 1).toString())
             setPadding(20, 20, 20, 20)
             setBackgroundColor(Color.parseColor("#222222"))
             setTextColor(Color.WHITE)
@@ -175,23 +189,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Optional manual numbers box (for small test lists)
-        val tvNumLabel = TextView(this).apply {
-            text = "Or type/paste manually here (optional):"
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 20, 0, 5)
-        }
-        etNumbers = EditText(this).apply {
-            hint = "Paste here only if not importing file"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 3
-            gravity = Gravity.TOP
-            setPadding(20, 20, 20, 20)
-            setBackgroundColor(Color.parseColor("#222222"))
-            setTextColor(Color.WHITE)
-        }
-
-        // Start Floating Bot
+        // Start Floating Bot Button
         val btnStart = Button(this).apply {
             text = "▶ START FLOATING BOT"
             setBackgroundColor(Color.parseColor("#28A745"))
@@ -205,26 +203,24 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
-                // If manual box has input, use that; otherwise use the imported file numbers
-                val manualLines = etNumbers.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
-                if (manualLines.isNotEmpty()) {
-                    DataStore.saveNumbersToFile(this@MainActivity, manualLines)
-                }
-
                 if (DataStore.numbers.isEmpty()) {
-                    Toast.makeText(this@MainActivity, "Please import a .txt file or type numbers!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Please import a .txt file first!", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
+
+                val startNum = etStartIndex.text.toString().toIntOrNull() ?: 1
+                val targetIndex = (startNum - 1).coerceIn(0, DataStore.numbers.size - 1)
 
                 val speed = (sbSpeed.progress + 1) / 10f
 
                 prefs.edit()
                     .putString("saved_pass", pass)
+                    .putInt("saved_start_index", startNum)
                     .putFloat("saved_speed", speed)
                     .apply()
 
                 DataStore.singlePassword = pass
-                DataStore.currentIndex = 0
+                DataStore.currentIndex = targetIndex
                 DataStore.speedMultiplier = speed
 
                 startService(Intent(this@MainActivity, FloatingWidgetService::class.java))
@@ -239,10 +235,10 @@ class MainActivity : AppCompatActivity() {
         layout.addView(sbSpeed)
         layout.addView(tvPassLabel)
         layout.addView(etPassword)
+        layout.addView(tvJumpLabel)
+        layout.addView(etStartIndex)
         layout.addView(tvFileStatus)
         layout.addView(btnPickFile)
-        layout.addView(tvNumLabel)
-        layout.addView(etNumbers)
         layout.addView(View(this).apply { minimumHeight = 25 })
         layout.addView(btnStart)
 
@@ -254,7 +250,6 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == PICK_FILE_CODE && resultCode == Activity.RESULT_OK) {
             data?.data?.let { uri ->
                 try {
-                    // Reads all 2000+ numbers directly without crashing or truncating UI
                     val list = mutableListOf<String>()
                     contentResolver.openInputStream(uri)?.bufferedReader()?.useLines { lines ->
                         lines.forEach { line ->
@@ -267,10 +262,7 @@ class MainActivity : AppCompatActivity() {
                         DataStore.saveNumbersToFile(this, list)
                         tvFileStatus.text = "✅ Loaded ${list.size} numbers from file!"
                         tvFileStatus.setTextColor(Color.parseColor("#00FFCC"))
-                        etNumbers.setText("") // Leave manual box clear so it doesn't truncate
                         Toast.makeText(this, "Imported ${list.size} numbers successfully!", Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(this, "File was empty!", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
                     Toast.makeText(this, "Failed to read file", Toast.LENGTH_SHORT).show()
@@ -289,6 +281,31 @@ class AutoPasteService : AccessibilityService() {
 
     private var lastPasswordNodeBounds: Rect? = null
 
+    /**
+     * Tap REGISTER button (From your Image 1)
+     */
+    fun tapRegister(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val nodes = root.findAccessibilityNodeInfosByText("REGISTER")
+        for (node in nodes) {
+            if (clickNodeOrParent(node)) return true
+        }
+
+        // Case-insensitive fallback
+        val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        findAllNodes(root, allNodes)
+        for (node in allNodes) {
+            val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+            if (text.equals("REGISTER", ignoreCase = true)) {
+                if (clickNodeOrParent(node)) return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Fill Phone (+234) and Password boxes (From your Image 3)
+     */
     fun fillCredentials(number: String, pass: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val fields = mutableListOf<AccessibilityNodeInfo>()
@@ -314,64 +331,56 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * Tap 1: Continue/Next below the password field
+     * Tap yellow NEXT button right below password (From your Image 2)
      */
-    fun tapContinueBelowPassword(): Boolean {
+    fun tapYellowNext(): Boolean {
         val root = rootInActiveWindow ?: return false
-
-        val words = listOf("Continue", "Next", "Submit", "Log In", "Login", "Sign In", "Proceed", "Done", "Go")
-        for (w in words) {
-            val nodes = root.findAccessibilityNodeInfosByText(w)
-            for (node in nodes) {
-                if (clickNodeOrParent(node)) return true
-            }
-        }
+        val nodes = root.findAccessibilityNodeInfosByText("NEXT")
 
         val passBounds = lastPasswordNodeBounds
         if (passBounds != null) {
-            val clickables = mutableListOf<AccessibilityNodeInfo>()
-            findClickableNodes(root, clickables)
-            val buttonBelow = clickables.filter {
-                val r = Rect()
-                it.getBoundsInScreen(r)
-                r.top >= (passBounds.bottom - 10)
-            }.minByOrNull {
-                val r = Rect()
-                it.getBoundsInScreen(r)
-                r.top
-            }
-
-            if (buttonBelow != null && clickNodeOrParent(buttonBelow)) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /**
-     * Tap 2: The red Next button at bottom right
-     */
-    fun tapBottomRightNextButton(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val metrics = resources.displayMetrics
-        val screenWidth = metrics.widthPixels
-        val screenHeight = metrics.heightPixels
-
-        val targetWords = listOf("Next", "Continue", "Confirm", "Proceed", "Done", "OK")
-        for (w in targetWords) {
-            val nodes = root.findAccessibilityNodeInfosByText(w)
+            // Pick the NEXT button positioned directly below the password box
             for (node in nodes) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
-                if (r.top >= screenHeight * 0.45 && r.left >= screenWidth * 0.3) {
+                if (r.top >= (passBounds.bottom - 20)) {
                     if (clickNodeOrParent(node)) return true
                 }
             }
         }
 
+        for (node in nodes) {
+            if (clickNodeOrParent(node)) return true
+        }
+        return false
+    }
+
+    /**
+     * Tap red 4.NEXT button at bottom right (From your Image 4)
+     */
+    fun tapRedNext(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val metrics = resources.displayMetrics
+        val screenWidth = metrics.widthPixels
+        val screenHeight = metrics.heightPixels
+
+        // Matches "4.NEXT", "4. NEXT", or "NEXT" located in bottom-right
+        val targetWords = listOf("4.NEXT", "4. NEXT", "NEXT")
+        for (w in targetWords) {
+            val nodes = root.findAccessibilityNodeInfosByText(w)
+            for (node in nodes) {
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                // Filter elements strictly in bottom-right area
+                if (r.top >= screenHeight * 0.45 && r.left >= screenWidth * 0.25) {
+                    if (clickNodeOrParent(node)) return true
+                }
+            }
+        }
+
+        // Fallback: lowest right-most clickable node
         val clickables = mutableListOf<AccessibilityNodeInfo>()
         findClickableNodes(root, clickables)
-
         val bottomRightNode = clickables.filter {
             val r = Rect()
             it.getBoundsInScreen(r)
@@ -385,97 +394,19 @@ class AutoPasteService : AccessibilityService() {
         if (bottomRightNode != null) {
             return clickNodeOrParent(bottomRightNode)
         }
-        return false
-    }
-
-    /**
-     * Tap 3: Tap action beside "Login" at the top (Register / Sign Up tab)
-     * Expanded search to top 45% of screen and catches all variations.
-     */
-    fun tapTopActionBesideLogin(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val metrics = resources.displayMetrics
-        val screenHeight = metrics.heightPixels
-        val topLimit = (screenHeight * 0.45).toInt()
-
-        val allClickables = mutableListOf<AccessibilityNodeInfo>()
-        findClickableNodes(root, allClickables)
-
-        // 1. Text search across all clickable elements in top 45%
-        val registerKeywords = listOf("register", "reg", "sign up", "signup", "registration", "create account", "create", "join", "sign-up")
-        for (node in allClickables) {
-            val r = Rect()
-            node.getBoundsInScreen(r)
-            if (r.top <= topLimit && r.bottom > 0) {
-                val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").lowercase()
-                if (registerKeywords.any { text.contains(it) }) {
-                    if (clickNodeOrParent(node)) return true
-                }
-            }
-        }
-
-        // Also check raw text nodes in top 45%
-        for (kw in registerKeywords) {
-            val nodes = root.findAccessibilityNodeInfosByText(kw)
-            for (node in nodes) {
-                val r = Rect()
-                node.getBoundsInScreen(r)
-                if (r.top <= topLimit) {
-                    if (clickNodeOrParent(node)) return true
-                }
-            }
-        }
-
-        // 2. Look for "Login" at the top and find its horizontal neighbor on the same bar
-        val loginKeywords = listOf("login", "log in", "sign in", "signin")
-        var loginRect: Rect? = null
-        for (kw in loginKeywords) {
-            val nodes = root.findAccessibilityNodeInfosByText(kw)
-            for (node in nodes) {
-                val r = Rect()
-                node.getBoundsInScreen(r)
-                if (r.top <= topLimit) {
-                    loginRect = r
-                    break
-                }
-            }
-            if (loginRect != null) break
-        }
-
-        if (loginRect != null) {
-            val neighbor = allClickables.filter {
-                val r = Rect()
-                it.getBoundsInScreen(r)
-                r.top <= topLimit &&
-                Math.abs(r.centerY() - loginRect.centerY()) <= 130 &&
-                !r.contains(loginRect.centerX(), loginRect.centerY()) &&
-                r.width() > 15 && r.height() > 15
-            }.minByOrNull {
-                val r = Rect()
-                it.getBoundsInScreen(r)
-                Math.abs(r.centerX() - loginRect.centerX())
-            }
-
-            if (neighbor != null && clickNodeOrParent(neighbor)) {
-                return true
-            }
-        }
 
         return false
     }
 
-    private fun clickNodeOrParent(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) {
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            return true
-        }
+    private fun clickNodeOrParent(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        if (node.isClickable) return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         var p = node.parent
-        while (p != null) {
-            if (p.isClickable) {
-                p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                return true
-            }
-            p = p.parent
+        for (i in 0..4) {
+            if (p != null) {
+                if (p.isClickable) return p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                p = p.parent
+            } else break
         }
         return false
     }
@@ -484,6 +415,12 @@ class AutoPasteService : AccessibilityService() {
         if (node == null) return
         if (node.isEditable) list.add(node)
         for (i in 0 until node.childCount) findInputs(node.getChild(i), list)
+    }
+
+    private fun findAllNodes(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
+        if (node == null) return
+        list.add(node)
+        for (i in 0 until node.childCount) findAllNodes(node.getChild(i), list)
     }
 
     private fun findClickableNodes(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
@@ -498,7 +435,7 @@ class AutoPasteService : AccessibilityService() {
     }
 }
 
-// ================= 3. COMPACT FLOATING WIDGET (DRAGGABLE) =================
+// ================= 3. COMPACT FLOATING WIDGET =================
 class FloatingWidgetService : Service() {
     private lateinit var wm: WindowManager
     private lateinit var floatView: LinearLayout
@@ -526,7 +463,6 @@ class FloatingWidgetService : Service() {
             y = 250
         }
 
-        // Compact pill with a dedicated Drag Grip on the left
         floatView = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -538,7 +474,6 @@ class FloatingWidgetService : Service() {
             }
         }
 
-        // ⠿ Dedicated Drag Handle
         val tvDragGrip = TextView(this).apply {
             text = "⠿"
             textSize = 18f
@@ -548,7 +483,7 @@ class FloatingWidgetService : Service() {
 
         val total = DataStore.numbers.size
         tvStatus = TextView(this).apply {
-            text = "[${DataStore.currentIndex}/$total]"
+            text = "[${DataStore.currentIndex + 1}/$total]"
             setTextColor(Color.parseColor("#00E5FF"))
             textSize = 12f
             setPadding(4, 0, 10, 0)
@@ -579,7 +514,7 @@ class FloatingWidgetService : Service() {
                 isPlaying = true
                 btnPlay.text = "⏸ PAUSE"
                 btnPlay.setBackgroundColor(Color.parseColor("#E67E22"))
-                runAutoStep()
+                runExactSequence()
             } else {
                 stopAutoLoop("Paused")
             }
@@ -595,19 +530,13 @@ class FloatingWidgetService : Service() {
         floatView.addView(btnPlay)
         floatView.addView(btnClose)
 
-        // Smooth drag on touch of the grip or background
-        var ix = 0
-        var iy = 0
-        var tx = 0f
-        var ty = 0f
-
+        // Drag handle logic
+        var ix = 0; var iy = 0; var tx = 0f; var ty = 0f
         val dragListener = View.OnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    ix = params.x
-                    iy = params.y
-                    tx = event.rawX
-                    ty = event.rawY
+                    ix = params.x; iy = params.y
+                    tx = event.rawX; ty = event.rawY
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -619,21 +548,22 @@ class FloatingWidgetService : Service() {
                 else -> false
             }
         }
-
         tvDragGrip.setOnTouchListener(dragListener)
 
         wm.addView(floatView, params)
     }
 
     /**
-     * Complete Automated Loop with Active Polling:
-     * 1. Fills credentials
-     * 2. Taps Next below password
-     * 3. Taps Red Next at bottom-right
-     * 4. Actively waits and taps Top Action (Register)
-     * 5. Automatically repeats for all 2,000+ accounts
+     * Exact requested flow:
+     * 1. Tap REGISTER
+     * 2. Wait 3 sec
+     * 3. Paste Phone and Password
+     * 4. Tap yellow NEXT
+     * 5. Wait 2 sec
+     * 6. Tap red 4.NEXT
+     * 7. Loop back to 1!
      */
-    private fun runAutoStep() {
+    private fun runExactSequence() {
         if (!isPlaying) return
 
         val total = DataStore.numbers.size
@@ -650,67 +580,60 @@ class FloatingWidgetService : Service() {
             return
         }
 
-        val currentNum = DataStore.numbers[DataStore.currentIndex]
-        val currentPass = DataStore.singlePassword
+        tvStatus.text = "[${DataStore.currentIndex + 1}/$total] Tap Reg"
 
-        // Step 1: Fill Credentials
-        val filled = service.fillCredentials(currentNum, currentPass)
+        // Step 1: Tap REGISTER
+        val regTapped = service.tapRegister()
 
-        if (filled) {
-            tvStatus.text = "[${DataStore.currentIndex + 1}/$total]"
+        if (regTapped) {
+            // Step 2: Wait 3 seconds
+            tvStatus.text = "[${DataStore.currentIndex + 1}/$total] Wait 3s"
 
-            // Step 2: Tap 1st Next below password
             loopHandler.postDelayed({
                 if (!isPlaying) return@postDelayed
-                service.tapContinueBelowPassword()
 
-                tvStatus.text = "Red Next..."
+                // Step 3: Paste number and password at the same time
+                val currentNum = DataStore.numbers[DataStore.currentIndex]
+                val currentPass = DataStore.singlePassword
+                service.fillCredentials(currentNum, currentPass)
 
-                // Step 3: Tap red Next at bottom-right
+                tvStatus.text = "[${DataStore.currentIndex + 1}/$total] Yellow Next"
+
+                // Step 4: Tap yellow NEXT
                 loopHandler.postDelayed({
                     if (!isPlaying) return@postDelayed
-                    service.tapBottomRightNextButton()
+                    service.tapYellowNext()
 
-                    tvStatus.text = "Register..."
+                    // Step 5: Wait 2 seconds
+                    tvStatus.text = "[${DataStore.currentIndex + 1}/$total] Wait 2s"
 
-                    // Step 4: Actively wait/poll for the Register button to appear, then tap it
-                    pollForTopRegister(attemptsLeft = 14) {
+                    loopHandler.postDelayed({
+                        if (!isPlaying) return@postDelayed
+
+                        // Step 6: Tap red 4.NEXT
+                        tvStatus.text = "[${DataStore.currentIndex + 1}/$total] Red Next"
+                        service.tapRedNext()
+
+                        // Advance index
                         DataStore.currentIndex++
 
-                        // Step 5: Wait for fresh screen to load, then repeat
+                        // Step 7: Wait 1.8s for screen reload, then repeat automatically
                         loopHandler.postDelayed({
-                            if (isPlaying) runAutoStep()
-                        }, DataStore.getDelay(1500))
-                    }
+                            if (isPlaying) runExactSequence()
+                        }, DataStore.getDelay(1800))
 
-                }, DataStore.getDelay(1300))
+                    }, DataStore.getDelay(2000)) // 2 sec wait
 
-            }, DataStore.getDelay(350))
+                }, DataStore.getDelay(400))
+
+            }, DataStore.getDelay(3000)) // 3 sec wait
 
         } else {
-            // Waiting for input box to appear on screen
-            tvStatus.text = "Waiting..."
+            // REGISTER not visible yet, poll every 600ms
+            tvStatus.text = "Waiting Reg..."
             loopHandler.postDelayed({
-                if (isPlaying) runAutoStep()
+                if (isPlaying) runExactSequence()
             }, DataStore.getDelay(600))
-        }
-    }
-
-    /**
-     * Polls every 300ms for the Register tab to appear on the screen
-     */
-    private fun pollForTopRegister(attemptsLeft: Int, onComplete: () -> Unit) {
-        if (!isPlaying) return
-
-        val service = AutoPasteService.instance
-        val clicked = service?.tapTopActionBesideLogin() ?: false
-
-        if (clicked || attemptsLeft <= 0) {
-            onComplete()
-        } else {
-            loopHandler.postDelayed({
-                pollForTopRegister(attemptsLeft - 1, onComplete)
-            }, DataStore.getDelay(300))
         }
     }
 
