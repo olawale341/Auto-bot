@@ -44,11 +44,11 @@ object DataStore {
 
     fun getStepDelay(): Long {
         val speed = speedMultiplier.coerceIn(0.1f, 10.0f)
-        return (600L / speed).toLong().coerceIn(100L, 3500L)
+        return (600L / speed).toLong().coerceIn(80L, 3500L)
     }
 
     /**
-     * Cleans any Nigerian number into strictly 10 digits (starting with 81, 91, 70, etc.)
+     * Strictly cleans any number to 10 digits (starting with 81, 91, 70, etc.)
      */
     fun formatTo10Digits(raw: String): String {
         var s = raw.filter { it.isDigit() }
@@ -292,12 +292,10 @@ class AutoPasteService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
-    private var lastPasswordBottom = 0
-
     fun tapCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = Path().apply { moveTo(x, y) }
-            val stroke = GestureDescription.StrokeDescription(path, 0, 90)
+            val stroke = GestureDescription.StrokeDescription(path, 0, 150) // Solid 150ms touch
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
             return dispatchGesture(gesture, null, null)
         }
@@ -321,11 +319,20 @@ class AutoPasteService : AccessibilityService() {
         return true
     }
 
-    fun areInputBoxesOpen(): Boolean {
+    /**
+     * Checks if the registration form (Phone, Password, Promo, or Terms) is on screen
+     */
+    fun isRegistrationFormOnScreen(): Boolean {
         val root = rootInActiveWindow ?: return false
-        val fields = mutableListOf<AccessibilityNodeInfo>()
-        findInputs(root, fields)
-        return fields.size >= 2
+        val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        findAllNodes(root, allNodes)
+        for (node in allNodes) {
+            val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").lowercase()
+            if (t.contains("phone") || t.contains("password") || t.contains("promo") || t.contains("terms")) {
+                return true
+            }
+        }
+        return false
     }
 
     /**
@@ -339,7 +346,7 @@ class AutoPasteService : AccessibilityService() {
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
-        // 1. Direct text search for "REGISTER" at the top
+        // Find "REGISTER" located at the top bar
         for (node in allNodes) {
             val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
             if (text.equals("REGISTER", ignoreCase = true) || text.contains("REGISTER", ignoreCase = true)) {
@@ -351,14 +358,13 @@ class AutoPasteService : AccessibilityService() {
             }
         }
 
-        // 2. Fallback: Find "LOGIN" at the top and tap directly to its right
+        // Fallback: Find "LOGIN" at the top and tap directly to its right
         for (node in allNodes) {
             val text = (node.text?.toString() ?: "").trim()
             if (text.equals("LOGIN", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
                 if (r.top <= topLimit && r.bottom > 0) {
-                    // Tap right beside LOGIN (where REGISTER sits)
                     val regX = r.right + (r.width() * 0.9f)
                     val regY = r.centerY().toFloat()
                     tapCoordinates(regX, regY)
@@ -379,56 +385,32 @@ class AutoPasteService : AccessibilityService() {
 
         if (fields.size < 2) return false
 
-        // Field 0 is +234 Phone, Field 1 is Password
         setText(fields[0], DataStore.formatTo10Digits(number))
         setText(fields[1], pass)
-
-        val rect = Rect()
-        fields[1].getBoundsInScreen(rect)
-        lastPasswordBottom = rect.bottom
-
         return true
     }
 
     /**
-     * STEP 3: Tap Yellow NEXT (located below password/terms with NO height cutoffs)
+     * STEP 3: Tap Yellow NEXT (Strictly inside the registration form)
      */
     fun tapYellowNext(): Boolean {
         val root = rootInActiveWindow ?: return false
+        val screenWidth = resources.displayMetrics.widthPixels
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
+        // Find the node with text "NEXT" inside the form
         for (node in allNodes) {
             val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
             if (t.equals("NEXT", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
-                // Must be located below the password field
-                if (r.top >= (lastPasswordBottom - 20)) {
-                    return tapNodeDirect(node)
-                }
-            }
-        }
-        return false
-    }
-
-    /**
-     * Checks if Red NEXT / 4.NEXT is visible on screen
-     */
-    fun isRedNextVisible(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val screenHeight = resources.displayMetrics.heightPixels
-        val screenWidth = resources.displayMetrics.widthPixels
-
-        val allNodes = mutableListOf<AccessibilityNodeInfo>()
-        findAllNodes(root, allNodes)
-
-        for (node in allNodes) {
-            val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-            if (t.contains("4.NEXT", ignoreCase = true) || (t.equals("NEXT", ignoreCase = true) && !areInputBoxesOpen())) {
-                val r = Rect()
-                node.getBoundsInScreen(r)
-                if (r.top >= screenHeight * 0.45 && r.left >= screenWidth * 0.25) {
+                if (r.width() > 0 && r.height() > 0) {
+                    // Tap center of yellow button and trigger accessibility click
+                    tapCoordinates(r.centerX().toFloat(), r.centerY().toFloat())
+                    tapCoordinates(screenWidth * 0.5f, r.centerY().toFloat())
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    node.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     return true
                 }
             }
@@ -437,7 +419,7 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 4: Tap Red 4.NEXT at bottom right
+     * STEP 4: Tap Red 4.NEXT (ONLY runs after the registration form is completely gone)
      */
     fun tapRedNext(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -449,7 +431,7 @@ class AutoPasteService : AccessibilityService() {
 
         for (node in allNodes) {
             val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-            if (t.contains("4.NEXT", ignoreCase = true) || (t.equals("NEXT", ignoreCase = true) && !areInputBoxesOpen())) {
+            if (t.contains("4.NEXT", ignoreCase = true) || t.equals("NEXT", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
                 if (r.top >= screenHeight * 0.45 && r.left >= screenWidth * 0.25) {
@@ -528,7 +510,7 @@ class FloatingWidgetService : Service() {
         val tvDragGrip = TextView(this).apply {
             text = "⠿"
             textSize = 18f
-setTextColor(Color.parseColor("#8899AA"))
+            setTextColor(Color.parseColor("#8899AA"))
             setPadding(8, 0, 8, 0)
         }
 
@@ -605,9 +587,11 @@ setTextColor(Color.parseColor("#8899AA"))
     }
 
     /**
-     * Sequential Step-by-Step execution:
-     * - Only one action runs at a time.
-     * - No step skips until verified!
+     * Complete Verified Sequence:
+     * Step 1: Tap REGISTER (or auto-detect if form is already open)
+     * Step 2: Pastes 10-digit number & password
+     * Step 3: Taps Yellow NEXT (Strictly stays on yellow until the form is gone!)
+     * Step 4: Taps Red NEXT, then loops back to Step 1!
      */
     private fun runVerifiedSequence() {
         if (!isPlaying) return
@@ -634,7 +618,7 @@ setTextColor(Color.parseColor("#8899AA"))
 
             // STEP 1: Tap REGISTER
             StepState.STEP_1_TAP_REGISTER -> {
-                if (service.areInputBoxesOpen()) {
+                if (service.isRegistrationFormOnScreen()) {
                     currentState = StepState.STEP_2_PASTE_CREDENTIALS
                     loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 200)
                     return
@@ -644,7 +628,7 @@ setTextColor(Color.parseColor("#8899AA"))
                 service.tapRegister()
 
                 loopHandler.postDelayed({
-                    if (service.areInputBoxesOpen()) {
+                    if (service.isRegistrationFormOnScreen()) {
                         currentState = StepState.STEP_2_PASTE_CREDENTIALS
                     }
                     if (isPlaying) runVerifiedSequence()
@@ -661,28 +645,30 @@ setTextColor(Color.parseColor("#8899AA"))
                 loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
             }
 
-            // STEP 3: Tap Yellow NEXT (and wait for red button to appear before moving)
+            // STEP 3: Tap Yellow NEXT (STAYS here until form disappears!)
             StepState.STEP_3_TAP_YELLOW_NEXT -> {
                 tvStatus.text = "$numIndex 3.Yellow"
 
-                // Check if Yellow NEXT already submitted and brought up Red NEXT
-                if (service.isRedNextVisible()) {
+                // Check: Has the yellow form disappeared?
+                if (!service.isRegistrationFormOnScreen()) {
+                    // Form is gone! Now and ONLY now can we advance to Red NEXT
                     currentState = StepState.STEP_4_TAP_RED_NEXT
                     loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 200)
                     return
                 }
 
+                // Yellow form is still on screen: tap the yellow button
                 service.tapYellowNext()
 
                 loopHandler.postDelayed({
-                    if (service.isRedNextVisible()) {
+                    if (!service.isRegistrationFormOnScreen()) {
                         currentState = StepState.STEP_4_TAP_RED_NEXT
                     }
                     if (isPlaying) runVerifiedSequence()
                 }, DataStore.getStepDelay())
             }
 
-            // STEP 4: Tap Red NEXT (strictly runs ONLY when red button is detected)
+            // STEP 4: Tap Red 4.NEXT (Runs ONLY when form has submitted)
             StepState.STEP_4_TAP_RED_NEXT -> {
                 tvStatus.text = "$numIndex 4.Red"
                 val tapped = service.tapRedNext()
