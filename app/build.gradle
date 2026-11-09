@@ -38,7 +38,7 @@ dependencies {
 }
 
 afterEvaluate {
-    tasks.matching { it.name.startsWith("compileDebug") }.configureEach {
+    tasks.named("compileDebugKotlin").configure {
         dependsOn("mergeDebugAssets")
     }
 }
