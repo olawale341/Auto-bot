@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Moves all build output OUT of the app folder so Kotlin stops conflicting with assets
+layout.buildDirectory.set(file("$rootDir/build_output"))
+
 android {
     namespace 'com.example.autobot'
     compileSdk 34
@@ -35,10 +38,4 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
-}
-
-afterEvaluate {
-    tasks.named("compileDebugKotlin").configure {
-        dependsOn("mergeDebugAssets")
-    }
 }
