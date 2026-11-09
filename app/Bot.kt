@@ -174,7 +174,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 20, 0, 5)
         }
         etStartIndex = EditText(this).apply {
-            hint = "e.g., 1 (or 51 to start from 51st)"
+            hint = "e.g., 1 (or 110 to start from #110)"
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(prefs.getInt("saved_start_index", 1).toString())
             setPadding(20, 20, 20, 20)
@@ -271,8 +271,6 @@ class MainActivity : AppCompatActivity() {
                         tvFileStatus.text = "✅ Loaded ${list.size} numbers (10 digits each)!"
                         tvFileStatus.setTextColor(Color.parseColor("#00FFCC"))
                         Toast.makeText(this, "Imported ${list.size} numbers successfully!", Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(this, "File was empty!", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
                     Toast.makeText(this, "Failed to read file", Toast.LENGTH_SHORT).show()
@@ -316,9 +314,6 @@ class AutoPasteService : AccessibilityService() {
         return true
     }
 
-    /**
-     * Checks strictly if the +234 Phone and Password input boxes are open on screen
-     */
     fun areInputBoxesOpen(): Boolean {
         val root = rootInActiveWindow ?: return false
         val fields = mutableListOf<AccessibilityNodeInfo>()
@@ -327,7 +322,7 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 1: Tap REGISTER at the top beside LOGIN
+     * STEP 1: Tap REGISTER (Top yellow text beside LOGIN)
      */
     fun tapRegister(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -337,7 +332,7 @@ class AutoPasteService : AccessibilityService() {
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
-        // 1. Direct search for text "REGISTER" at the top
+        // 1. Direct search for text "REGISTER" at top
         for (node in allNodes) {
             val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
             if (text.equals("REGISTER", ignoreCase = true) || text.contains("REGISTER", ignoreCase = true)) {
@@ -350,7 +345,7 @@ class AutoPasteService : AccessibilityService() {
             }
         }
 
-        // 2. Direct fallback: Find "LOGIN" and tap right beside it (where REGISTER sits)
+        // 2. Fallback: Find "LOGIN" at the top and tap directly to its right
         for (node in allNodes) {
             val text = (node.text?.toString() ?: "").trim()
             if (text.equals("LOGIN", ignoreCase = true)) {
@@ -383,20 +378,22 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 3: Tap Yellow NEXT
+     * STEP 3: Tap Yellow NEXT (Must be above bottom dock: top < 85% screen height)
      */
     fun tapYellowNext(): Boolean {
         val root = rootInActiveWindow ?: return false
+        val screenHeight = resources.displayMetrics.heightPixels
         val screenWidth = resources.displayMetrics.widthPixels
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
         for (node in allNodes) {
             val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-            if (t.equals("NEXT", ignoreCase = true)) {
+            if (t.equals("NEXT", ignoreCase = true) && !t.contains("4.")) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
-                if (r.width() > 0 && r.height() > 0) {
+                // Yellow NEXT sits inside the form (top < 85% of screen)
+                if (r.top < screenHeight * 0.85 && r.top > screenHeight * 0.30) {
                     tapCoordinates(r.centerX().toFloat(), r.centerY().toFloat())
                     tapCoordinates(screenWidth * 0.5f, r.centerY().toFloat())
                     node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -409,7 +406,7 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 4: Tap Red 4.NEXT
+     * STEP 4: Tap Red 4.NEXT (At the very bottom right dock)
      */
     fun tapRedNext(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -419,17 +416,24 @@ class AutoPasteService : AccessibilityService() {
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
+        // 1. Search for node with "4.NEXT" or "4." in bottom dock
         for (node in allNodes) {
             val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-            if (t.contains("4.NEXT", ignoreCase = true) || t.equals("NEXT", ignoreCase = true)) {
+            if (t.contains("4.NEXT", ignoreCase = true) || t.contains("4.", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
-                if (r.top >= screenHeight * 0.45 && r.left >= screenWidth * 0.25) {
-                    return tapNodeDirect(node)
+                if (r.top >= screenHeight * 0.80 && r.left >= screenWidth * 0.50) {
+                    tapNodeDirect(node)
+                    return true
                 }
             }
         }
-        return false
+
+        // 2. Direct coordinate fallback: Exact center of 4th red button in bottom dock
+        val redX = screenWidth * 0.875f
+        val redY = screenHeight * 0.965f
+        tapCoordinates(redX, redY)
+        return true
     }
 
     private fun findInputs(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
@@ -577,11 +581,12 @@ class FloatingWidgetService : Service() {
     }
 
     /**
-     * Perfect Step-by-Step Sequence:
-     * Step 1: Tap REGISTER (repeats until input boxes actually open!)
-     * Step 2: Pastes 10-digit number & password
-     * Step 3: Taps Yellow NEXT (waits until input boxes close!)
-     * Step 4: Taps Red NEXT, advances index, loops back to Step 1!
+     * Complete Unblocked Sequence:
+     * 1. Tap REGISTER (or skips to paste if boxes already open)
+     * 2. Pastes 10-digit number & password
+     * 3. Taps Yellow NEXT
+     * 4. Taps Red 4.NEXT immediately after!
+     * 5. Advances count, loops back to Step 1!
      */
     private fun runVerifiedSequence() {
         if (!isPlaying) return
@@ -606,7 +611,7 @@ class FloatingWidgetService : Service() {
 
         when (currentState) {
 
-            // STEP 1: Tap REGISTER (NEVER skipped unless +234 Phone is literally open)
+            // STEP 1: Tap REGISTER
             StepState.STEP_1_TAP_REGISTER -> {
                 tvStatus.text = "$numIndex 1.Reg"
 
@@ -636,36 +641,23 @@ class FloatingWidgetService : Service() {
                 loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
             }
 
-            // STEP 3: Tap Yellow NEXT (Stays here until boxes close!)
+            // STEP 3: Tap Yellow NEXT, then proceed directly to Red NEXT
             StepState.STEP_3_TAP_YELLOW_NEXT -> {
                 tvStatus.text = "$numIndex 3.Yellow"
-
-                // If input boxes have closed, Yellow NEXT has officially submitted!
-                if (!service.areInputBoxesOpen()) {
-                    currentState = StepState.STEP_4_TAP_RED_NEXT
-                    loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 200)
-                    return
-                }
-
                 service.tapYellowNext()
-
-                loopHandler.postDelayed({
-                    if (!service.areInputBoxesOpen()) {
-                        currentState = StepState.STEP_4_TAP_RED_NEXT
-                    }
-                    if (isPlaying) runVerifiedSequence()
-                }, DataStore.getStepDelay())
+                currentState = StepState.STEP_4_TAP_RED_NEXT // Moves directly to Red Next!
+                loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
             }
 
-            // STEP 4: Tap Red NEXT, then loop back to Step 1!
+            // STEP 4: Tap Red 4.NEXT at the bottom right dock
             StepState.STEP_4_TAP_RED_NEXT -> {
                 tvStatus.text = "$numIndex 4.Red"
                 val tapped = service.tapRedNext()
                 if (tapped) {
                     DataStore.currentIndex++
-                    currentState = StepState.STEP_1_TAP_REGISTER // Always loops back to Step 1!
+                    currentState = StepState.STEP_1_TAP_REGISTER // Repeat for next number!
                 }
-                loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
+                loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay() * 2)
             }
         }
     }
