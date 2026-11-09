@@ -47,9 +47,6 @@ object DataStore {
         return (600L / speed).toLong().coerceIn(80L, 3500L)
     }
 
-    /**
-     * Strictly cleans any number to 10 digits (starting with 81, 91, 70, etc.)
-     */
     fun formatTo10Digits(raw: String): String {
         var s = raw.filter { it.isDigit() }
         if (s.startsWith("234") && s.length >= 13) {
@@ -295,7 +292,7 @@ class AutoPasteService : AccessibilityService() {
     fun tapCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val path = Path().apply { moveTo(x, y) }
-            val stroke = GestureDescription.StrokeDescription(path, 0, 150) // Solid 150ms touch
+            val stroke = GestureDescription.StrokeDescription(path, 0, 150)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
             return dispatchGesture(gesture, null, null)
         }
@@ -320,19 +317,13 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * Checks if the registration form (Phone, Password, Promo, or Terms) is on screen
+     * Checks strictly if the +234 Phone and Password input boxes are open on screen
      */
-    fun isRegistrationFormOnScreen(): Boolean {
+    fun areInputBoxesOpen(): Boolean {
         val root = rootInActiveWindow ?: return false
-        val allNodes = mutableListOf<AccessibilityNodeInfo>()
-        findAllNodes(root, allNodes)
-        for (node in allNodes) {
-            val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").lowercase()
-            if (t.contains("phone") || t.contains("password") || t.contains("promo") || t.contains("terms")) {
-                return true
-            }
-        }
-        return false
+        val fields = mutableListOf<AccessibilityNodeInfo>()
+        findInputs(root, fields)
+        return fields.size >= 2
     }
 
     /**
@@ -346,19 +337,20 @@ class AutoPasteService : AccessibilityService() {
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
-        // Find "REGISTER" located at the top bar
+        // 1. Direct search for text "REGISTER" at the top
         for (node in allNodes) {
             val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
             if (text.equals("REGISTER", ignoreCase = true) || text.contains("REGISTER", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
                 if (r.top <= topLimit && r.bottom > 0) {
-                    return tapNodeDirect(node)
+                    tapNodeDirect(node)
+                    return true
                 }
             }
         }
 
-        // Fallback: Find "LOGIN" at the top and tap directly to its right
+        // 2. Direct fallback: Find "LOGIN" and tap right beside it (where REGISTER sits)
         for (node in allNodes) {
             val text = (node.text?.toString() ?: "").trim()
             if (text.equals("LOGIN", ignoreCase = true)) {
@@ -391,7 +383,7 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 3: Tap Yellow NEXT (Strictly inside the registration form)
+     * STEP 3: Tap Yellow NEXT
      */
     fun tapYellowNext(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -399,14 +391,12 @@ class AutoPasteService : AccessibilityService() {
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
         findAllNodes(root, allNodes)
 
-        // Find the node with text "NEXT" inside the form
         for (node in allNodes) {
             val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
             if (t.equals("NEXT", ignoreCase = true)) {
                 val r = Rect()
                 node.getBoundsInScreen(r)
                 if (r.width() > 0 && r.height() > 0) {
-                    // Tap center of yellow button and trigger accessibility click
                     tapCoordinates(r.centerX().toFloat(), r.centerY().toFloat())
                     tapCoordinates(screenWidth * 0.5f, r.centerY().toFloat())
                     node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -419,7 +409,7 @@ class AutoPasteService : AccessibilityService() {
     }
 
     /**
-     * STEP 4: Tap Red 4.NEXT (ONLY runs after the registration form is completely gone)
+     * STEP 4: Tap Red 4.NEXT
      */
     fun tapRedNext(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -587,11 +577,11 @@ class FloatingWidgetService : Service() {
     }
 
     /**
-     * Complete Verified Sequence:
-     * Step 1: Tap REGISTER (or auto-detect if form is already open)
+     * Perfect Step-by-Step Sequence:
+     * Step 1: Tap REGISTER (repeats until input boxes actually open!)
      * Step 2: Pastes 10-digit number & password
-     * Step 3: Taps Yellow NEXT (Strictly stays on yellow until the form is gone!)
-     * Step 4: Taps Red NEXT, then loops back to Step 1!
+     * Step 3: Taps Yellow NEXT (waits until input boxes close!)
+     * Step 4: Taps Red NEXT, advances index, loops back to Step 1!
      */
     private fun runVerifiedSequence() {
         if (!isPlaying) return
@@ -616,19 +606,20 @@ class FloatingWidgetService : Service() {
 
         when (currentState) {
 
-            // STEP 1: Tap REGISTER
+            // STEP 1: Tap REGISTER (NEVER skipped unless +234 Phone is literally open)
             StepState.STEP_1_TAP_REGISTER -> {
-                if (service.isRegistrationFormOnScreen()) {
+                tvStatus.text = "$numIndex 1.Reg"
+
+                if (service.areInputBoxesOpen()) {
                     currentState = StepState.STEP_2_PASTE_CREDENTIALS
-                    loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 200)
+                    loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 150)
                     return
                 }
 
-                tvStatus.text = "$numIndex 1.Reg"
                 service.tapRegister()
 
                 loopHandler.postDelayed({
-                    if (service.isRegistrationFormOnScreen()) {
+                    if (service.areInputBoxesOpen()) {
                         currentState = StepState.STEP_2_PASTE_CREDENTIALS
                     }
                     if (isPlaying) runVerifiedSequence()
@@ -645,36 +636,34 @@ class FloatingWidgetService : Service() {
                 loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
             }
 
-            // STEP 3: Tap Yellow NEXT (STAYS here until form disappears!)
+            // STEP 3: Tap Yellow NEXT (Stays here until boxes close!)
             StepState.STEP_3_TAP_YELLOW_NEXT -> {
                 tvStatus.text = "$numIndex 3.Yellow"
 
-                // Check: Has the yellow form disappeared?
-                if (!service.isRegistrationFormOnScreen()) {
-                    // Form is gone! Now and ONLY now can we advance to Red NEXT
+                // If input boxes have closed, Yellow NEXT has officially submitted!
+                if (!service.areInputBoxesOpen()) {
                     currentState = StepState.STEP_4_TAP_RED_NEXT
                     loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, 200)
                     return
                 }
 
-                // Yellow form is still on screen: tap the yellow button
                 service.tapYellowNext()
 
                 loopHandler.postDelayed({
-                    if (!service.isRegistrationFormOnScreen()) {
+                    if (!service.areInputBoxesOpen()) {
                         currentState = StepState.STEP_4_TAP_RED_NEXT
                     }
                     if (isPlaying) runVerifiedSequence()
                 }, DataStore.getStepDelay())
             }
 
-            // STEP 4: Tap Red 4.NEXT (Runs ONLY when form has submitted)
+            // STEP 4: Tap Red NEXT, then loop back to Step 1!
             StepState.STEP_4_TAP_RED_NEXT -> {
                 tvStatus.text = "$numIndex 4.Red"
                 val tapped = service.tapRedNext()
                 if (tapped) {
                     DataStore.currentIndex++
-                    currentState = StepState.STEP_1_TAP_REGISTER
+                    currentState = StepState.STEP_1_TAP_REGISTER // Always loops back to Step 1!
                 }
                 loopHandler.postDelayed({ if (isPlaying) runVerifiedSequence() }, DataStore.getStepDelay())
             }
